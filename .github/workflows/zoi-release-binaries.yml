@@ -43,7 +43,7 @@ jobs:
             lib: libvk_swiftshader.dylib
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Only the submodules vk_swiftshader actually needs. `--recursive` would
       # also drag in PowerVR_Examples, which is large and unused here.
@@ -70,24 +70,51 @@ jobs:
 
       # The ICD json names the library by a RELATIVE path, so the two files must
       # stay side by side in the extracted directory.
+      # The ELF .so carries its DWARF inline, which made the first published
+      # linux-x64 tarball 427 MB against mac-arm64's 12 MB (a Mach-O dylib keeps
+      # debug info in the .o files, which are not shipped). zoi's CI downloads
+      # this on every job, so the DWARF is split into a separate asset that is
+      # only fetched when something needs symbolising. `--strip-debug` keeps the
+      # symbol table, so a crash backtrace still names functions without it.
       - name: Package
         run: |
           set -euo pipefail
           src="build/${{ matrix.out_dir }}"
-          test -r "${src}/${{ matrix.lib }}"
+          lib="${{ matrix.lib }}"
+          asset="${{ matrix.asset }}"
+          test -r "${src}/${lib}"
           test -r "${src}/vk_swiftshader_icd.json"
-          mkdir -p "pkg/${{ matrix.asset }}"
-          cp "${src}/${{ matrix.lib }}" "${src}/vk_swiftshader_icd.json" "pkg/${{ matrix.asset }}/"
-          tar -C pkg -czf "${{ matrix.asset }}.tar.gz" "${{ matrix.asset }}"
-          if [ "${RUNNER_OS}" = "Linux" ]; then sha256sum "${{ matrix.asset }}.tar.gz"
-          else shasum -a 256 "${{ matrix.asset }}.tar.gz"; fi | tee "${{ matrix.asset }}.tar.gz.sha256"
+          mkdir -p "pkg/${asset}"
+          cp "${src}/vk_swiftshader_icd.json" "pkg/${asset}/"
 
-      - uses: actions/upload-artifact@v4
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            objcopy --only-keep-debug "${src}/${lib}" "${lib}.debug"
+            objcopy --strip-debug "${src}/${lib}" "pkg/${asset}/${lib}"
+            objcopy --add-gnu-debuglink="${lib}.debug" "pkg/${asset}/${lib}"
+            tar -czf "${asset}-debug.tar.gz" "${lib}.debug"
+          else
+            cp "${src}/${lib}" "pkg/${asset}/"
+          fi
+
+          tar -C pkg -czf "${asset}.tar.gz" "${asset}"
+
+          sha() {
+            if [ "${RUNNER_OS}" = "Linux" ]; then sha256sum "$1"; else shasum -a 256 "$1"; fi \
+              | tee "$1.sha256"
+          }
+          sha "${asset}.tar.gz"
+          if [ -r "${asset}-debug.tar.gz" ]; then sha "${asset}-debug.tar.gz"; fi
+          ls -l "${asset}".*tar.gz
+
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: |
             ${{ matrix.asset }}.tar.gz
             ${{ matrix.asset }}.tar.gz.sha256
+            ${{ matrix.asset }}-debug.tar.gz
+            ${{ matrix.asset }}-debug.tar.gz.sha256
+          if-no-files-found: ignore
 
   # One job creates the release, so the two build jobs cannot race each other
   # into a half-populated one. It runs only if BOTH platforms built: a release
@@ -97,9 +124,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
