@@ -106,6 +106,29 @@ jobs:
           if [ -r "${asset}-debug.tar.gz" ]; then sha "${asset}-debug.tar.gz"; fi
           ls -l "${asset}".*tar.gz
 
+      # Prove the PACKAGED driver loads and enumerates a device before it is
+      # published. This is the artifact zoi pins, and it is not the file cmake
+      # produced: on Linux it has been --strip-debug'd and had a .gnu_debuglink
+      # added. Without this step a packaging mistake reaches zoi's CI as a
+      # "no compatible adapter" failure in a completely different repository.
+      - name: Smoke-test the packaged driver
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq libvulkan1 vulkan-tools
+          else
+            brew install --quiet vulkan-loader vulkan-tools
+          fi
+          icd="${PWD}/pkg/${{ matrix.asset }}/vk_swiftshader_icd.json"
+          test -r "${icd}"
+          # VK_DRIVER_FILES, not the deprecated VK_ICD_FILENAMES. Pinning the ICD
+          # is also what makes a fallback to some other driver impossible, so a
+          # SwiftShader match below really is our binary.
+          summary="$(VK_DRIVER_FILES="${icd}" vulkaninfo --summary 2>&1)"
+          echo "${summary}" | grep -E 'deviceName|driverName|apiVersion' || true
+          echo "${summary}" | grep -qi 'swiftshader' \
+            || { echo "::error::the packaged driver did not enumerate a SwiftShader device"; echo "${summary}" | tail -30; exit 1; }
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
