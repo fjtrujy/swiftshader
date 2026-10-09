@@ -2305,6 +2305,12 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyImageView(VkDevice device, VkImageView image
 	TRACE("(VkDevice device = %p, VkImageView imageView = %p, const VkAllocationCallbacks* pAllocator = %p)",
 	      device, static_cast<void *>(imageView), pAllocator);
 
+	// sw::DrawCall::teardown() dereferences the render target's vk::ImageView on a
+	// marl worker AFTER the submission's fence/semaphore has been signalled, so an
+	// application that legally destroys a view once its submission reports complete
+	// can free it while a draw is still touching it (heap-use-after-free). Drain the
+	// renderer before freeing.
+	vk::Cast(device)->waitIdle();
 	vk::Cast(device)->unregisterImageView(vk::Cast(imageView));
 	vk::destroy(imageView, pAllocator);
 }
