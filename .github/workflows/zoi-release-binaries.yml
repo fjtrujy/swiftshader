@@ -1,23 +1,28 @@
-# Build the patched SwiftShader Vulkan ICD and publish it as a release asset.
+# Build the patched SwiftShader Vulkan ICD and publish it as a release.
 #
 # Why this exists: zoi's CI and its local golden recorder used to take
 # libvk_swiftshader out of a Chrome for Testing bundle. That ships the stock
 # driver, which has a heap-use-after-free on render-target VkImageViews
-# (see the commit on this branch). This workflow builds the patched driver
-# instead, for the two platforms zoi needs:
+# (see the fix commit on this branch). This builds the patched driver instead,
+# for the two platforms zoi needs:
 #
 #   linux-x64   GitHub-hosted ubuntu runners -> the `visual` / `gpu` CI lanes
 #   mac-arm64   maintainer laptops           -> scripts/visual/record-swiftshader-goldens.sh
 #
-# Tag a commit `zoi-v<n>` to cut a release; `workflow_dispatch` builds without
-# publishing so the build itself can be checked first.
+# VERSIONING. Every commit on a `zoi/**` branch publishes its own release,
+# tagged `zoi-v<ZOI_VERSION>-<short sha>` (e.g. zoi-v1.0.0-5b10bed7f). The tag
+# is therefore immutable: a given tag always names one commit and one pair of
+# binaries, which is what zoi pins. Bump the `ZOI_VERSION` file for a release
+# that is meant to be read as a new version rather than a new build of one.
+# Asset NAMES stay constant across versions so the download URL is
+# `.../releases/download/<tag>/swiftshader-<platform>.tar.gz`.
 name: zoi release binaries
 
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 'zoi-v*'
+    branches:
+      - 'zoi/**'
 
 permissions:
   contents: write
@@ -84,13 +89,49 @@ jobs:
             ${{ matrix.asset }}.tar.gz
             ${{ matrix.asset }}.tar.gz.sha256
 
-      - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/zoi-v')
+  # One job creates the release, so the two build jobs cannot race each other
+  # into a half-populated one. It runs only if BOTH platforms built: a release
+  # carrying one of the two would be pinnable by zoi and then fail on the other
+  # platform.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes \
-            "Patched SwiftShader Vulkan ICD for zoi. Base: $(git rev-parse --short HEAD)." \
-            || true
-          gh release upload "${GITHUB_REF_NAME}" \
-            "${{ matrix.asset }}.tar.gz" "${{ matrix.asset }}.tar.gz.sha256" --clobber
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < ZOI_VERSION)"
+          test -n "${version}"
+          tag="zoi-v${version}-$(git rev-parse --short=9 HEAD)"
+
+          test -r "dist/swiftshader-linux-x64.tar.gz"
+          test -r "dist/swiftshader-mac-arm64.tar.gz"
+
+          # Re-running a workflow on the same commit must not try to recreate
+          # the tag; uploading with --clobber keeps that case idempotent.
+          if ! gh release view "${tag}" >/dev/null 2>&1; then
+            printf '%s\n' \
+              'Patched SwiftShader Vulkan ICD for zoi.' \
+              '' \
+              "Version: ${version}" \
+              "Branch: ${GITHUB_REF_NAME}" \
+              "Commit: ${GITHUB_SHA}" \
+              '' \
+              'Pin this tag from zoi; asset names are stable across versions.' > notes.md
+            gh release create "${tag}" \
+              --target "${GITHUB_SHA}" \
+              --title "${tag}" \
+              --notes-file notes.md
+          fi
+
+          gh release upload "${tag}" dist/* --clobber
+          echo "published ${tag}" >> "${GITHUB_STEP_SUMMARY}"
