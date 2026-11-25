@@ -42,7 +42,7 @@ jobs:
             asset: swiftshader-linux-arm64
             out_dir: Linux
             lib: libvk_swiftshader.so
-          - runner: macos-14
+          - runner: macos-15
             asset: swiftshader-mac-arm64
             out_dir: Darwin
             lib: libvk_swiftshader.dylib
