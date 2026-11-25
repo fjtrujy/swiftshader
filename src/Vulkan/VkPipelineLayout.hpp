@@ -41,7 +41,15 @@ public:
 	uint32_t getDescriptorSize(uint32_t setNumber, uint32_t bindingNumber) const;
 	bool isDescriptorDynamic(uint32_t setNumber, uint32_t bindingNumber) const;
 
+	// Unique per layout object. Keys caches whose entries keep a pointer to this
+	// layout (compute programs), so an entry never outlives the layout it reads.
 	const uint32_t identifier;
+
+	// Equal for every layout with the same descriptor bindings and push constant
+	// ranges. Keys the vertex and pixel routine caches, whose generated code reads
+	// only those values at generation time, so content-equal layouts created by
+	// independent pipelines share their compiled routines.
+	uint32_t contentIdentifier = 0;
 
 	uint32_t incRefCount();
 	uint32_t decRefCount();

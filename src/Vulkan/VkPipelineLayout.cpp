@@ -16,10 +16,31 @@
 
 #include <algorithm>
 #include <atomic>
+#include <map>
+#include <mutex>
+#include <vector>
 
 namespace vk {
 
 static std::atomic<uint32_t> layoutIdentifierSerial = { 1 };  // Start at 1. 0 is invalid/void layout.
+
+// Interns a layout's routine-relevant content: one identifier per distinct content,
+// for the lifetime of the process. The set of distinct layouts a process creates
+// is bounded, so entries are never evicted.
+static uint32_t internLayoutContent(std::vector<uint32_t> &&content)
+{
+	static std::mutex mutex;
+	static auto *identifiers = new std::map<std::vector<uint32_t>, uint32_t>();  // Leaked: no exit-time destructor.
+	static uint32_t nextIdentifier = 1;  // 0 is invalid/void layout.
+
+	std::lock_guard<std::mutex> lock(mutex);
+	auto inserted = identifiers->emplace(std::move(content), nextIdentifier);
+	if(inserted.second)
+	{
+		nextIdentifier++;
+	}
+	return inserted.first->second;
+}
 
 PipelineLayout::PipelineLayout(const VkPipelineLayoutCreateInfo *pCreateInfo, void *mem)
     : identifier(layoutIdentifierSerial++)
@@ -59,6 +80,35 @@ PipelineLayout::PipelineLayout(const VkPipelineLayoutCreateInfo *pCreateInfo, vo
 
 	pushConstantRanges = reinterpret_cast<VkPushConstantRange *>(bindingStorage);
 	std::copy(pCreateInfo->pPushConstantRanges, pCreateInfo->pPushConstantRanges + pCreateInfo->pushConstantRangeCount, pushConstantRanges);
+
+	// Everything this layout exposes to routine generation, in a fixed order.
+	std::vector<uint32_t> content;
+	content.push_back(pCreateInfo->setLayoutCount);
+	for(uint32_t i = 0; i < pCreateInfo->setLayoutCount; i++)
+	{
+		if(pCreateInfo->pSetLayouts[i] == VK_NULL_HANDLE)
+		{
+			content.push_back(~0u);
+			continue;
+		}
+		content.push_back(descriptorSets[i].bindingCount);
+		for(uint32_t j = 0; j < descriptorSets[i].bindingCount; j++)
+		{
+			const Binding &binding = descriptorSets[i].bindings[j];
+			content.push_back(static_cast<uint32_t>(binding.descriptorType));
+			content.push_back(binding.offset);
+			content.push_back(binding.dynamicOffsetIndex);
+			content.push_back(binding.descriptorCount);
+		}
+	}
+	content.push_back(pCreateInfo->pushConstantRangeCount);
+	for(uint32_t i = 0; i < pCreateInfo->pushConstantRangeCount; i++)
+	{
+		content.push_back(pushConstantRanges[i].stageFlags);
+		content.push_back(pushConstantRanges[i].offset);
+		content.push_back(pushConstantRanges[i].size);
+	}
+	contentIdentifier = internLayoutContent(std::move(content));
 
 	incRefCount();
 }
