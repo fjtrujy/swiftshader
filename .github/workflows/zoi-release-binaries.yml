@@ -34,7 +34,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          # Pinned, never ubuntu-latest: the .so links against the build
+          # runner's glibc, and zoi's runners are Ubuntu 24.04 (glibc 2.39).
+          - runner: ubuntu-24.04
             asset: swiftshader-linux-x64
             out_dir: Linux
             lib: libvk_swiftshader.so
@@ -133,6 +135,20 @@ jobs:
           echo "${summary}" | grep -E 'deviceName|driverName|apiVersion' || true
           echo "${summary}" | grep -qi 'swiftshader' \
             || { echo "::error::the packaged driver did not enumerate a SwiftShader device"; echo "${summary}" | tail -30; exit 1; }
+
+      # The smoke test runs on the runner that built the driver, so it cannot see
+      # a glibc the consumers lack. zoi's runners are Ubuntu 24.04 (glibc 2.39);
+      # a driver needing more fails there with "Found no drivers!".
+      - name: Check the driver's glibc requirement
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          lib="pkg/${{ matrix.asset }}/${{ matrix.lib }}"
+          max_supported=39
+          needed="$(objdump -T "${lib}" | grep -oE 'GLIBC_2\.[0-9]+' | cut -d. -f2 | sort -n | tail -1)"
+          echo "${lib} needs GLIBC_2.${needed} (supported up to GLIBC_2.${max_supported})"
+          [ "${needed}" -le "${max_supported}" ] \
+            || { echo "::error::${lib} needs GLIBC_2.${needed}; zoi's Ubuntu 24.04 runners have GLIBC_2.${max_supported}"; exit 1; }
 
       - uses: actions/upload-artifact@v7
         with:
